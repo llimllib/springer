@@ -27,7 +27,6 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 	}
 
 	for bytes.Compare(pub[29:32], target) != 0 {
-		// fmt.Printf("%x\n", pub[29:32])
 		pub, priv, err = ed25519.GenerateKey(nil)
 		if err != nil {
 			panic(err)
