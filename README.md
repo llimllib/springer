@@ -15,3 +15,7 @@ On first run, the client will generate a keypair for you according to the spring
 This key has to meet a certain specification, so it may take up to a half hour to generate on the first run. The code to generate it is totally unoptimized and can probably be sped up, if you want to be the one to do that, awesome.
 
 `echo "testing" | go run client/main.go`
+
+## view the content
+
+go to http://localhost:8000 while the server is running
