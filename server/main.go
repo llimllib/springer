@@ -1,4 +1,14 @@
 // https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220609.md
+// TODO:
+//  * wipe expired posts
+//  * add difficulty checking
+//  * check post mtime
+//    * that the header is valid (and 409 if not)
+//    * that the body contains a proper last-modified tag
+//  * implement peer sharing and receiving
+//  * display HTML safely, and in shadow DOMs
+//    * right now we just don't allow actual HTML, which is of course
+//      against the spirit of the thing
 package main
 
 import (
@@ -8,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -63,17 +74,49 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8000", nil))
 }
 
+func readTemplate(name string) (string, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	h, err := ioutil.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return string(h), nil
+}
+
+func mustTemplate(name string) *template.Template {
+	f, err := readTemplate(name)
+	if err != nil {
+		panic(err)
+	}
+
+	t, err := template.New("index").Parse(f)
+	if err != nil {
+		panic(err)
+	}
+
+	return t
+}
+
 type Spring83Server struct {
-	db *sql.DB
+	db           *sql.DB
+	homeTemplate *template.Template
 }
 
 func newSpring83Server(db *sql.DB) *Spring83Server {
 	return &Spring83Server{
-		db: db,
+		db:           db,
+		homeTemplate: mustTemplate("server/templates/index.html"),
 	}
 }
 
 func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Spring-Version", "83")
+
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		panic(err)
@@ -205,7 +248,56 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type Board struct {
+	Key    string
+	Board  string
+	Expiry string
+}
+
+func (s *Spring83Server) loadBoards() ([]Board, error) {
+	query := `
+		SELECT key, board, expiry
+		FROM boards
+	`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+
+	boards := []Board{}
+	for rows.Next() {
+		var key, board, expiry string
+
+		err = rows.Scan(&key, &board, &expiry)
+		if err != nil {
+			return nil, err
+		}
+
+		boards = append(boards, Board{
+			Key:    key,
+			Board:  board,
+			Expiry: expiry,
+		})
+	}
+
+	return boards, nil
+}
+
 func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
+	boards, err := s.loadBoards()
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
+		return
+	}
+
+	data := struct {
+		Boards []Board
+	}{
+		Boards: boards,
+	}
+
+	s.homeTemplate.Execute(w, data)
 }
 
 func (s *Spring83Server) RootHandler(w http.ResponseWriter, r *http.Request) {

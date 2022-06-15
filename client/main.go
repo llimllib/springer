@@ -85,7 +85,6 @@ func getKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
 func main() {
 	pubkey, privkey := getKeys()
 
-	// initialize http client
 	client := &http.Client{}
 
 	body, err := ioutil.ReadAll(os.Stdin)
@@ -100,6 +99,7 @@ func main() {
 		panic(fmt.Errorf("input body too long"))
 	}
 
+	// TODO: take the URL as a command line param
 	// set the HTTP method, url, and request body
 	url := fmt.Sprintf("http://localhost:8000/%x", pubkey)
 	fmt.Printf("URL: %s\n", url)
