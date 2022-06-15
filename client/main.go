@@ -100,7 +100,6 @@ func main() {
 	}
 
 	// TODO: take the URL as a command line param
-	// set the HTTP method, url, and request body
 	url := fmt.Sprintf("http://localhost:8000/%x", pubkey)
 	fmt.Printf("URL: %s\n", url)
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(body))

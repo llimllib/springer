@@ -114,6 +114,35 @@ func newSpring83Server(db *sql.DB) *Spring83Server {
 	}
 }
 
+func (s *Spring83Server) getBoard(key string) (*Board, error) {
+	query := `
+		SELECT key, board, expiry
+		FROM boards
+		WHERE key=?
+	`
+	row := s.db.QueryRow(query, key)
+
+	var dbkey, board, expiry string
+	err := row.Scan(&dbkey, &board, &expiry)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	expTime, err := time.Parse(time.RFC3339, expiry)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Board{
+		Key:    key,
+		Board:  board,
+		Expiry: expTime,
+	}, nil
+}
+
 func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Spring-Version", "83")
 
@@ -139,11 +168,25 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO : If this value (mtime) is older or equal to the timestamp of the
-	// server's version of the board, the server must reject the request with
-	// 409 Conflict.
-	//
-	// this is just here to allow the variable to exist
+	key, err := hex.DecodeString(r.URL.Path[1:])
+	if err != nil || len(key) != 32 {
+		http.Error(w, "Invalid key", http.StatusBadRequest)
+		return
+	}
+	keyStr := fmt.Sprintf("%x", key)
+
+	// curBoard is nil if there is no existing board for this key, and a Board object otherwise
+	curBoard, err := s.getBoard(keyStr)
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if curBoard != nil && !mtime.Before(curBoard.Expiry) {
+		http.Error(w, "Old content", http.StatusConflict)
+		return
+	}
 	log.Printf("%s\n", mtime)
 
 	var signature []byte
@@ -186,14 +229,6 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// the path must be a ed25519 public key of 32 bytes
-	fmt.Printf("%s\n", r.URL.Path[1:])
-	key, err := hex.DecodeString(r.URL.Path[1:])
-	if err != nil || len(key) != 32 {
-		http.Error(w, "Invalid key", http.StatusBadRequest)
-		return
-	}
-
 	// If the current four-digit year is YYYY, and the
 	// previous four-digit year is YYYX, the server must
 	// only accept PUTs for keys that end with the four
@@ -202,7 +237,6 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	//
 	// The server must reject other keys with 400 Bad
 	// Request.
-	keyStr := fmt.Sprintf("%x", key)
 	last4 := string(keyStr[60:64])
 	if keyStr[58:60] != "ed" ||
 		(last4 != time.Now().Format("2006") &&
@@ -251,7 +285,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 type Board struct {
 	Key    string
 	Board  string
-	Expiry string
+	Expiry time.Time
 }
 
 func (s *Spring83Server) loadBoards() ([]Board, error) {
@@ -273,10 +307,15 @@ func (s *Spring83Server) loadBoards() ([]Board, error) {
 			return nil, err
 		}
 
+		expTime, err := time.Parse(time.RFC3339, expiry)
+		if err != nil {
+			return nil, err
+		}
+
 		boards = append(boards, Board{
 			Key:    key,
 			Board:  board,
-			Expiry: expiry,
+			Expiry: expTime,
 		})
 	}
 
