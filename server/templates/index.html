@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html><head><title>Spring83</title>
+  </head>
+  <body>
+{{range $i, $board := .Boards}}
+  {{if $i}}
+  <hr>
+  {{end}}
+  {{.Board}}
+{{end}}
+  </body>
+</html>
