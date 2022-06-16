@@ -379,7 +379,7 @@ func randstr() string {
 }
 
 // for now, on loads to /, I'm just going to show all boards no matter what
-func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
+func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 	boards, err := s.loadBoards()
 	if err != nil {
 		log.Printf(err.Error())
@@ -421,11 +421,66 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	s.homeTemplate.Execute(w, data)
 }
 
+func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
+	board, err := s.getBoard(r.URL.Path[1:])
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
+		return
+	}
+	if board == nil {
+		http.Error(
+			w,
+			fmt.Sprintf("Could not find board %s", r.URL.Path[1:]),
+			http.StatusNotFound)
+		return
+	}
+
+	difficultyFactor, _, err := s.getDifficulty()
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
+
+	// XXX: we want to block all javascript from executing, except for our own
+	// script, with a CSP but I'm not sure exactly how to do that. This does
+	// seem to block a simple onclick handler I added to the code, which is
+	// nice
+	nonce := randstr()
+	w.Header().Add("Content-Security-Policy", fmt.Sprintf("script-src 'nonce-%s'; img-src 'self'", nonce))
+
+	boardBytes, err := json.Marshal([]*Board{board})
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "Unable to marshal boards", http.StatusInternalServerError)
+		return
+	}
+
+	data := struct {
+		Boards string
+		Nonce  string
+	}{
+		Boards: string(boardBytes),
+		Nonce:  nonce,
+	}
+
+	// for now just be lazy and don't give this page its own template, re-use
+	// the page designed to show all boards
+	s.homeTemplate.Execute(w, data)
+}
+
 func (s *Spring83Server) RootHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "PUT" {
 		s.publishBoard(w, r)
 	} else if r.Method == "GET" {
-		s.showBoard(w, r)
+		if len(r.URL.Path) == 1 {
+			s.showAllBoards(w, r)
+		} else {
+			s.showBoard(w, r)
+		}
 	} else {
 		http.Error(w, "Invalid method", http.StatusBadRequest)
 	}
