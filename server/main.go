@@ -3,10 +3,8 @@
 //  * wipe expired posts
 //  * check that the body contains a proper last-modified tag
 //  * implement peer sharing and receiving
-//  * display HTML safely (strip javascript with sanitize API maybe?)
-//    * the sanitize API is not yet available anywhere (6/15/22)
-//    * https://developer.mozilla.org/en-US/docs/Web/API/Sanitizer/sanitize#browser_compatibility
 //  * add /<key> to show a single board
+//  * display each board in a region with an aspect ratio of either 1:sqrt(2) or sqrt(2):1
 package main
 
 import (
@@ -403,7 +401,7 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	// seem to block a simple onclick handler I added to the code, which is
 	// nice
 	nonce := randstr()
-	w.Header().Add("Content-Security-Policy", fmt.Sprintf("script-src 'nonce-%s'", nonce))
+	w.Header().Add("Content-Security-Policy", fmt.Sprintf("script-src 'nonce-%s'; img-src 'self'", nonce))
 
 	boardBytes, err := json.Marshal(boards)
 	if err != nil {
