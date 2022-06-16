@@ -13,12 +13,14 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -27,6 +29,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+const MAX_SIG = (1 << 256) - 1
 
 func must(err error) {
 	if err != nil {
@@ -142,6 +146,25 @@ func (s *Spring83Server) getBoard(key string) (*Board, error) {
 	}, nil
 }
 
+func (s *Spring83Server) boardCount() (int, error) {
+	query := `
+		SELECT count(*)
+		FROM boards
+	`
+	row := s.db.QueryRow(query)
+
+	var count int
+	err := row.Scan(&count)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			return 0, err
+		}
+		panic(err)
+	}
+
+	return count, nil
+}
+
 func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Spring-Version", "83")
 
@@ -186,7 +209,36 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Old content", http.StatusConflict)
 		return
 	}
-	log.Printf("%s\n", mtime)
+
+	// if the server doesn't have any board stored for <key>, then it must
+	// apply another check. The key, interpreted as a 256-bit number, must be
+	// less than a threshold defined by the server's difficulty factor:
+	if curBoard == nil {
+		count, err := s.boardCount()
+		if err != nil {
+			log.Printf(err.Error())
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		difficultyFactor := math.Pow(float64(count)/10_000_000, 4)
+		w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
+		keyThreshold := MAX_SIG * (1.0 - difficultyFactor)
+
+		// Using that difficulty factor, we can calculate the key threshold:
+		//
+		// MAX_KEY = (2**256 - 1)
+		// key_threshold = MAX_KEY * (1.0 - 0.52) = <an inscrutable gigantic number>
+		//
+		// The server must reject PUT requests for new keys that are not less
+		// than <an inscrutable gigantic number>
+		if binary.BigEndian.Uint64(key) >= uint64(keyThreshold) {
+			if err != nil || len(key) != 32 {
+				// the spec doesn't specify the proper return value in this case
+				http.Error(w, "Key greater than threshold", http.StatusBadRequest)
+				return
+			}
+		}
+	}
 
 	var signature []byte
 	if authorizationHeaders, ok := r.Header["Authorization"]; !ok {

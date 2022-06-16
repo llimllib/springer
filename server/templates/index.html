@@ -4,6 +4,8 @@
 .board {
   border: 1px solid black;
   margin: 10px;
+  padding: 10px;
+  display: inline-flex;
 }
 </style>
 <script>
@@ -13,6 +15,9 @@ window.addEventListener("DOMContentLoaded", (_evt) => {
     return `<div id="b${board.Key}" class="board"></div>\n`
   });
   document.querySelector("#containers").innerHTML = divs.join("\n");
+
+  // maybe use: https://developer.mozilla.org/en-US/docs/Web/API/Sanitizer/sanitize
+  // to try and strip XSS/scripts?
   boards.forEach(board => {
     const container = document.querySelector(`#b${board.Key}`);
     const shadow = container.attachShadow({mode: 'closed'});
