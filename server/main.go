@@ -12,6 +12,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
@@ -368,6 +369,17 @@ func (s *Spring83Server) loadBoards() ([]Board, error) {
 	return boards, nil
 }
 
+func randstr() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		panic("failed to read random bytes to create random string")
+	}
+
+	// format it in hexadecimal, and start it with an n because html can have
+	// problems with strings starting with 0 and we're using it as a nonce
+	return fmt.Sprintf("n%x", buf)
+}
+
 // for now, on loads to /, I'm just going to show all boards no matter what
 func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	boards, err := s.loadBoards()
@@ -386,6 +398,13 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
 
+	// XXX: we want to block all javascript from executing, except for our own
+	// script, with a CSP but I'm not sure exactly how to do that. This does
+	// seem to block a simple onclick handler I added to the code, which is
+	// nice
+	nonce := randstr()
+	w.Header().Add("Content-Security-Policy", fmt.Sprintf("script-src 'nonce-%s'", nonce))
+
 	boardBytes, err := json.Marshal(boards)
 	if err != nil {
 		log.Printf(err.Error())
@@ -395,9 +414,12 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 
 	data := struct {
 		Boards string
+		Nonce  string
 	}{
 		Boards: string(boardBytes),
+		Nonce:  nonce,
 	}
+	log.Printf("%v", data)
 
 	s.homeTemplate.Execute(w, data)
 }

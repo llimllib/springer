@@ -8,7 +8,7 @@
   display: inline-flex;
 }
 </style>
-<script>
+<script nonce="{{.Nonce}}">
 window.addEventListener("DOMContentLoaded", (_evt) => {
   const boards = {{.Boards}}
   const divs = boards.map(board => {
