@@ -4,6 +4,8 @@
 //  * check that the body contains a proper last-modified tag
 //  * implement peer sharing and receiving
 //  * display HTML safely (strip javascript with sanitize API maybe?)
+//    * the sanitize API is not yet available anywhere (6/15/22)
+//    * https://developer.mozilla.org/en-US/docs/Web/API/Sanitizer/sanitize#browser_compatibility
 //  * add /<key> to show a single board
 package main
 
@@ -241,8 +243,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		// than <an inscrutable gigantic number>
 		if binary.BigEndian.Uint64(key) >= keyThreshold {
 			if err != nil || len(key) != 32 {
-				// the spec doesn't specify the proper return value in this case
-				http.Error(w, "Key greater than threshold", http.StatusBadRequest)
+				http.Error(w, "Key greater than threshold", http.StatusForbidden)
 				return
 			}
 		}

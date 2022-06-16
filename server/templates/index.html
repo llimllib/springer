@@ -16,11 +16,12 @@ window.addEventListener("DOMContentLoaded", (_evt) => {
   });
   document.querySelector("#containers").innerHTML = divs.join("\n");
 
-  // maybe use: https://developer.mozilla.org/en-US/docs/Web/API/Sanitizer/sanitize
-  // to try and strip XSS/scripts?
   boards.forEach(board => {
     const container = document.querySelector(`#b${board.Key}`);
     const shadow = container.attachShadow({mode: 'closed'});
+
+    // would like to use SetHTML, which would sanitize the DOM, but it's not
+    // yet available. This HTML can run scripts and XSS on you
     shadow.innerHTML = board.Board;
   });
 });
