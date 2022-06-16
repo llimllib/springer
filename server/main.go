@@ -1,12 +1,10 @@
 // https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220609.md
 // TODO:
 //  * wipe expired posts
-//  * add difficulty checking
 //  * check that the body contains a proper last-modified tag
 //  * implement peer sharing and receiving
-//  * display HTML safely, and in shadow DOMs
-//    * right now we just don't allow actual HTML, which is of course
-//      against the spirit of the thing
+//  * display HTML safely (strip javascript with sanitize API maybe?)
+//  * add /<key> to show a single board
 package main
 
 import (
@@ -165,6 +163,17 @@ func (s *Spring83Server) boardCount() (int, error) {
 	return count, nil
 }
 
+func (s *Spring83Server) getDifficulty() (float64, uint64, error) {
+	count, err := s.boardCount()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	difficultyFactor := math.Pow(float64(count)/10_000_000, 4)
+	keyThreshold := uint64(MAX_SIG * (1.0 - difficultyFactor))
+	return difficultyFactor, keyThreshold, nil
+}
+
 func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Spring-Version", "83")
 
@@ -214,15 +223,14 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// apply another check. The key, interpreted as a 256-bit number, must be
 	// less than a threshold defined by the server's difficulty factor:
 	if curBoard == nil {
-		count, err := s.boardCount()
+		difficultyFactor, keyThreshold, err := s.getDifficulty()
 		if err != nil {
 			log.Printf(err.Error())
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		difficultyFactor := math.Pow(float64(count)/10_000_000, 4)
+
 		w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
-		keyThreshold := MAX_SIG * (1.0 - difficultyFactor)
 
 		// Using that difficulty factor, we can calculate the key threshold:
 		//
@@ -231,7 +239,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		//
 		// The server must reject PUT requests for new keys that are not less
 		// than <an inscrutable gigantic number>
-		if binary.BigEndian.Uint64(key) >= uint64(keyThreshold) {
+		if binary.BigEndian.Uint64(key) >= keyThreshold {
 			if err != nil || len(key) != 32 {
 				// the spec doesn't specify the proper return value in this case
 				http.Error(w, "Key greater than threshold", http.StatusBadRequest)
@@ -292,7 +300,6 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	if keyStr[58:60] != "ed" ||
 		(last4 != time.Now().Format("2006") &&
 			last4 != time.Now().AddDate(1, 0, 0).Format("2006")) {
-		log.Printf("%s %s %s", keyStr[58:60] == "ed", last4 == time.Now().Format("2006"), time.Now().Format("2006"))
 		http.Error(w, "Signature must end with edYYYY", http.StatusBadRequest)
 		return
 	}
@@ -304,19 +311,6 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid signature", http.StatusBadRequest)
 		return
 	}
-
-	// TODO:
-	// 	Additionally, if the server doesn't have any board
-	// 	stored for <key>, then it must apply another check. The
-	// 	key, interpreted as a 256-bit number, must be less than
-	// 	a threshold defined by the server's difficulty factor:
-	//
-	// MAX_SIG = (2**256 - 1) key_threshold = MAX_SIG * ( 1.0 -
-	//            difficulty_factor)
-	//
-	// This check is not applied to keys for which the server
-	// already has a board stored. You can read more about the
-	// difficulty factor later in this document.
 
 	expiry := time.Now().AddDate(0, 0, 7).Format(time.RFC3339)
 	_, err = s.db.Exec(`
@@ -373,6 +367,7 @@ func (s *Spring83Server) loadBoards() ([]Board, error) {
 	return boards, nil
 }
 
+// for now, on loads to /, I'm just going to show all boards no matter what
 func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	boards, err := s.loadBoards()
 	if err != nil {
@@ -380,6 +375,15 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
 		return
 	}
+
+	difficultyFactor, _, err := s.getDifficulty()
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
 
 	boardBytes, err := json.Marshal(boards)
 	if err != nil {
