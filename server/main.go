@@ -419,7 +419,6 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 		Boards: string(boardBytes),
 		Nonce:  nonce,
 	}
-	log.Printf("%v", data)
 
 	s.homeTemplate.Execute(w, data)
 }
