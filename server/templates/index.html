@@ -1,12 +1,28 @@
 <!DOCTYPE html>
 <html><head><title>Spring83</title>
+<style>
+.board {
+  border: 1px solid black;
+  margin: 10px;
+}
+</style>
+<script>
+window.addEventListener("DOMContentLoaded", (_evt) => {
+  const boards = {{.Boards}}
+  const divs = boards.map(board => {
+    return `<div id="b${board.Key}" class="board"></div>\n`
+  });
+  document.querySelector("#containers").innerHTML = divs.join("\n");
+  boards.forEach(board => {
+    const container = document.querySelector(`#b${board.Key}`);
+    const shadow = container.attachShadow({mode: 'closed'});
+    shadow.innerHTML = board.Board;
+  });
+});
+</script>
   </head>
   <body>
-{{range $i, $board := .Boards}}
-  {{if $i}}
-  <hr>
-  {{end}}
-  {{.Board}}
-{{end}}
+    <div id="containers">
+    </div>
   </body>
 </html>

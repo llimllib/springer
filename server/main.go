@@ -2,9 +2,7 @@
 // TODO:
 //  * wipe expired posts
 //  * add difficulty checking
-//  * check post mtime
-//    * that the header is valid (and 409 if not)
-//    * that the body contains a proper last-modified tag
+//  * check that the body contains a proper last-modified tag
 //  * implement peer sharing and receiving
 //  * display HTML safely, and in shadow DOMs
 //    * right now we just don't allow actual HTML, which is of course
@@ -16,14 +14,15 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"text/template"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -330,10 +329,17 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	boardBytes, err := json.Marshal(boards)
+	if err != nil {
+		log.Printf(err.Error())
+		http.Error(w, "Unable to marshal boards", http.StatusInternalServerError)
+		return
+	}
+
 	data := struct {
-		Boards []Board
+		Boards string
 	}{
-		Boards: boards,
+		Boards: string(boardBytes),
 	}
 
 	s.homeTemplate.Execute(w, data)
