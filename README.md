@@ -6,7 +6,7 @@ Implementing some of [this very draft spec](https://github.com/robinsloan/spring
 
 ## run the server
 
-If you have [modd]() installed, run `modd`. Alternatively, `go run server/main.go`
+If you have [modd](https://github.com/cortesi/modd) installed, run `modd`. Alternatively, `go run server/main.go`
 
 ## run the client
 
