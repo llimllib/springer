@@ -11,29 +11,51 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"time"
 )
 
-func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
-	pub, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		panic(err)
+func validKey() (foundPublicKey ed25519.PublicKey, foundPrivateKey ed25519.PrivateKey) {
+
+	expiryYear := time.Now().Year() + 1
+	keyEnd := fmt.Sprintf("ed%d", expiryYear)
+	nRoutines := runtime.NumCPU() - 1
+	var waitGroup sync.WaitGroup
+	var once sync.Once
+
+	fmt.Println(" - looking for a key that ends in", keyEnd)
+	fmt.Println(" - using", nRoutines, "cores")
+
+	waitGroup.Add(nRoutines)
+	for i := 0; i < nRoutines; i++ {
+		go func(num int) {
+			for foundPublicKey == nil {
+				pub, priv, err := ed25519.GenerateKey(nil)
+				if err != nil {
+					panic(err)
+				}
+
+				target, err := hex.DecodeString(keyEnd)
+				if err != nil {
+					panic(err)
+				}
+
+				if bytes.Compare(pub[29:32], target) == 0 {
+					once.Do(func() {
+						fmt.Printf("%s\n", fmt.Sprintf("%x", pub))
+						foundPublicKey = pub
+						foundPrivateKey = priv
+					})
+				}
+			}
+			waitGroup.Done()
+		}(i)
 	}
 
-	// TODO: generate a new key if necessary
-	target, err := hex.DecodeString("ed2023")
-	if err != nil {
-		panic(err)
-	}
+	waitGroup.Wait()
 
-	for bytes.Compare(pub[29:32], target) != 0 {
-		pub, priv, err = ed25519.GenerateKey(nil)
-		if err != nil {
-			panic(err)
-		}
-	}
-	fmt.Printf("%s\n", fmt.Sprintf("%x", pub))
-	return pub, priv
+	return
 }
 
 func fileExists(name string) bool {
@@ -72,7 +94,7 @@ func getKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
 			panic(err)
 		}
 	} else {
-		fmt.Printf("Generating key, give this a minute or two\n")
+		fmt.Printf("I am fishing in the sea of all possible keys for a valid spring83 key. This may take a bit...\n")
 		pubkey, privkey = validKey()
 
 		os.WriteFile(pubfile, pubkey, 0666)

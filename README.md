@@ -12,7 +12,7 @@ If you have [modd]() installed, run `modd`. Alternatively, `go run server/main.g
 
 On first run, the client will generate a keypair for you according to the spring83 spec, and store it in `~/.config/spring83/key.pub` and `~/.config/spring83/key.priv`.
 
-This key has to meet a certain specification, so it may take up to a half hour to generate on the first run. The code to generate it is totally unoptimized and can probably be sped up, if you want to be the one to do that, awesome.
+This key has to meet a certain specification, so it may take some time to generate on the first run.
 
 `echo "testing" | go run client/main.go`
 
