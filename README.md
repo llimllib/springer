@@ -1,6 +1,6 @@
 # A testing Spring83 server
 
-Implementing some of [this very draft spec](https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220609.md)
+Implementing some of [this very draft spec](https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220616.md)
 
 # To test
 
