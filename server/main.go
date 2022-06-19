@@ -1,10 +1,15 @@
-// https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220609.md
+// https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220616.md
 // TODO:
 //  * wipe expired posts
-//  * check that the body contains a proper last-modified tag
+//  * check that the <time> tag in the body
 //  * implement peer sharing and receiving
 //  * add /<key> to show a single board
 //  * display each board in a region with an aspect ratio of either 1:sqrt(2) or sqrt(2):1
+//  * add <link> elements:
+//     * However, it is presumed that a home page or profile page might contain a <link> element analogous to the kind used to specify RSS feeds. A client scanning a web page for an associated board should look for <link> elements with the type attribute set to text/board+html.
+//		 <link rel="alternate" type="text/board+html" href="https://bogbody.biz/ca93846ae61903a862d44727c16fed4b80c0522cab5e5b8b54763068b83e0623" />
+//  * scan for <link rel="next"...> links as specified in the spec
+
 package main
 
 import (
@@ -22,6 +27,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -30,6 +36,14 @@ import (
 )
 
 const MAX_SIG = (1 << 256) - 1
+const MAX_BODY_SIZE = 2217
+
+var (
+	// For the convenience of server implementers, the <time> element must fit
+	// the following format exactly; "valid HTML" is not sufficient:
+	// <time datetime="YYYY-MM-DDTHH:MM:SSZ">
+	TIME_RE = regexp.MustCompile("<time datetime=\".{19}Z\">")
+)
 
 func must(err error) {
 	if err != nil {
@@ -50,7 +64,8 @@ func initDB() *sql.DB {
 		CREATE TABLE boards (
 			key text NOT NULL PRIMARY KEY,
 			board text,
-			expiry text
+			creation_datetime text,
+			expiry_datetime text
 		);
 		`
 
@@ -118,13 +133,13 @@ func newSpring83Server(db *sql.DB) *Spring83Server {
 
 func (s *Spring83Server) getBoard(key string) (*Board, error) {
 	query := `
-		SELECT key, board, expiry
+		SELECT key, board, creation_datetime, expiry_datetime
 		FROM boards
 		WHERE key=?
 	`
 	row := s.db.QueryRow(query, key)
 
-	var dbkey, board, expiry string
+	var dbkey, board, creation, expiry string
 	err := row.Scan(&dbkey, &board, &expiry)
 	if err != nil {
 		if err != sql.ErrNoRows {
@@ -133,15 +148,21 @@ func (s *Spring83Server) getBoard(key string) (*Board, error) {
 		return nil, nil
 	}
 
+	creationTime, err := time.Parse(time.RFC3339, creation)
+	if err != nil {
+		return nil, err
+	}
+
 	expTime, err := time.Parse(time.RFC3339, expiry)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Board{
-		Key:    key,
-		Board:  board,
-		Expiry: expTime,
+		Key:      key,
+		Board:    board,
+		Creation: creationTime,
+		Expiry:   expTime,
 	}, nil
 }
 
@@ -183,21 +204,9 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
-	if len(body) > 2217 {
+	if len(body) > MAX_BODY_SIZE {
 		http.Error(w, "Payload too large", http.StatusRequestEntityTooLarge)
 		return
-	}
-
-	var mtime time.Time
-	if ifUnmodifiedHeader, ok := r.Header["If-Unmodified-Since"]; !ok {
-		http.Error(w, "Missing If-Unmodified-Since header", http.StatusBadRequest)
-		return
-	} else {
-		// spec says "in HTTP format", but it's not entirely clear if this matches?
-		if mtime, err = time.Parse(time.RFC1123, ifUnmodifiedHeader[0]); err != nil {
-			http.Error(w, "Invalid format for If-Unmodified-Since header", http.StatusBadRequest)
-			return
-		}
 	}
 
 	key, err := hex.DecodeString(r.URL.Path[1:])
@@ -212,11 +221,6 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf(err.Error())
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	if curBoard != nil && !mtime.Before(curBoard.Expiry) {
-		http.Error(w, "Old content", http.StatusConflict)
 		return
 	}
 
@@ -248,6 +252,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Verify that the provided signature matches the body content
 	var signature []byte
 	if authorizationHeaders, ok := r.Header["Authorization"]; !ok {
 		http.Error(w, "Missing Authorization header", http.StatusBadRequest)
@@ -301,7 +306,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// date, and expires at the end of the last day of the month specified. For
 	// example, the key
 	last4 := string(keyStr[60:64])
-	t, err := time.Parse("0106", last4)
+	last4Time, err := time.Parse("0106", last4)
 	if err != nil {
 		log.Printf("Failed parsing last4 %s", last4)
 		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
@@ -312,7 +317,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// expires on the last day of the month of its issuance; here we're just
 	// giving it an extra month. TODO be more accurate
 	twoYearsInHours := (365 * 2 * 24.0) + 31*24.0
-	timeDiff := t.Sub(time.Now()).Hours()
+	timeDiff := last4Time.Sub(time.Now()).Hours()
 	if keyStr[57:60] != "83e" {
 		log.Printf("Expected 83e %s", string(keyStr[57:60]))
 		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
@@ -337,16 +342,50 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: here we should find the <time> element and parse its time
+	// The server must reject the PUT request, returning 400 Bad Request, if
+	//
+	// - the request is transmitted without a <time> element; or
+	// - its <time> element's datetime attribute is not a UTC timestamp in ISO
+	//   8601 format; or
+	// - its <time> element's datetime attribute is set to a timestamp in the
+	//   future.
+	match := TIME_RE.Find(body)
+	if match == nil {
+		log.Printf("no time element in body: %s %v", body, body)
+		http.Error(w, "Missing time element in body", http.StatusBadRequest)
+		return
+	}
+	if len(match) != 38 {
+		log.Printf("match: %s len %d != 38", match, len(match))
+		http.Error(w, "Invalid time element in body", http.StatusBadRequest)
+		return
+	}
+	bodyTime, err := time.Parse(time.RFC3339, string(match[16:36]))
+	if err != nil {
+		log.Printf("Unable to parse: %s", match[16:36])
+		http.Error(w, "Invalid time element in body", http.StatusBadRequest)
+		return
+	}
+	if time.Now().Before(bodyTime) {
+		log.Printf("Future time: %v", bodyTime)
+		http.Error(w, "Future times are not allowed", http.StatusBadRequest)
+		return
+	}
+
+	if curBoard != nil && bodyTime.Before(curBoard.Creation) {
+		http.Error(w, "Old content", http.StatusConflict)
+		return
+	}
 
 	expiry := time.Now().AddDate(0, 0, 7).Format(time.RFC3339)
 	_, err = s.db.Exec(`
-		INSERT INTO boards (key, board, expiry)
-		            values(?, ?, ?)
+		INSERT INTO boards (key, board, creation_datetime, expiry_datetime)
+		            values(?, ?, ?, ?)
 	    ON CONFLICT(key) DO UPDATE SET
 			board=?,
-			expiry=?
-	`, keyStr, body, expiry, body, expiry)
+			creation_datetime=?,
+			expiry_datetime=?
+	`, keyStr, body, bodyTime, expiry, body, bodyTime, expiry)
 
 	if err != nil {
 		log.Printf("%s", err)
@@ -355,14 +394,15 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 }
 
 type Board struct {
-	Key    string
-	Board  string
-	Expiry time.Time
+	Key      string
+	Board    string
+	Creation time.Time
+	Expiry   time.Time
 }
 
 func (s *Spring83Server) loadBoards() ([]Board, error) {
 	query := `
-		SELECT key, board, expiry
+		SELECT key, board, creation_datetime, expiry_datetime
 		FROM boards
 	`
 	rows, err := s.db.Query(query)
@@ -372,9 +412,14 @@ func (s *Spring83Server) loadBoards() ([]Board, error) {
 
 	boards := []Board{}
 	for rows.Next() {
-		var key, board, expiry string
+		var key, board, creation, expiry string
 
 		err = rows.Scan(&key, &board, &expiry)
+		if err != nil {
+			return nil, err
+		}
+
+		creationTime, err := time.Parse(time.RFC3339, creation)
 		if err != nil {
 			return nil, err
 		}
@@ -385,9 +430,10 @@ func (s *Spring83Server) loadBoards() ([]Board, error) {
 		}
 
 		boards = append(boards, Board{
-			Key:    key,
-			Board:  board,
-			Expiry: expTime,
+			Key:      key,
+			Board:    board,
+			Creation: creationTime,
+			Expiry:   expTime,
 		})
 	}
 
@@ -423,12 +469,17 @@ func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
 
-	// XXX: we want to block all javascript from executing, except for our own
-	// script, with a CSP but I'm not sure exactly how to do that. This does
-	// seem to block a simple onclick handler I added to the code, which is
-	// nice
 	nonce := randstr()
-	w.Header().Add("Content-Security-Policy", fmt.Sprintf("script-src 'nonce-%s'; img-src 'self'", nonce))
+	policy := []string{
+		"default-src: 'none'",
+		"style-src: 'self' 'unsafe-inline'",
+		"font-src 'self'",
+		fmt.Sprintf("script-src 'nonce-%s'", nonce),
+		"form-action *",
+		"connect-src *",
+	}
+
+	w.Header().Add("Content-Security-Policy", strings.Join(policy, "; "))
 
 	boardBytes, err := json.Marshal(boards)
 	if err != nil {
@@ -499,8 +550,18 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	s.homeTemplate.Execute(w, data)
 }
 
+func (s *Spring83Server) Options(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+	w.Header().Add("Access-Control-Allow-Origin", "*")
+	w.Header().Add("Access-Control-Allow-Headers", "Content-Type, If-Modified-Since, Spring-Signature, Spring-Version")
+	w.Header().Add("Access-Control-Expose-Headers", "Content-Type, Last-Modified, Spring-Difficulty, Spring-Signature, Spring-Version")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Spring83Server) RootHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "PUT" {
+	if r.Method == "OPTIONS" {
+		s.Options(w, r)
+	} else if r.Method == "PUT" {
 		s.publishBoard(w, r)
 	} else if r.Method == "GET" {
 		if len(r.URL.Path) == 1 {

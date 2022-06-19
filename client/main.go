@@ -1,3 +1,5 @@
+// TODO:
+//
 package main
 
 import (
@@ -108,7 +110,7 @@ func getKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
 			panic(err)
 		}
 	} else {
-		fmt.Printf("I am fishing in the sea of all possible keys for a valid spring83 key. This may take a bit...\n")
+		fmt.Println("Generating valid key. This will take a minute")
 		pubkey, privkey = validKey()
 
 		os.WriteFile(pubfile, pubkey, 0666)
@@ -127,6 +129,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	// Prepoend a time element. Maybe we should check to see if it's already
+	// been provided?
+	timeElt := []byte(fmt.Sprintf("<time datetime=\"%s\">", time.Now().UTC().Format(time.RFC3339)))
+	body = append(timeElt, body...)
 
 	if len(body) == 0 {
 		panic(fmt.Errorf("input required"))
