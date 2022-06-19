@@ -35,7 +35,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const MAX_SIG = (1 << 256) - 1
+const MAX_KEY_64 = (1 << 64) - 1
 const MAX_BODY_SIZE = 2217
 
 var (
@@ -140,7 +140,7 @@ func (s *Spring83Server) getBoard(key string) (*Board, error) {
 	row := s.db.QueryRow(query, key)
 
 	var dbkey, board, creation, expiry string
-	err := row.Scan(&dbkey, &board, &expiry)
+	err := row.Scan(&dbkey, &board, &creation, &expiry)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			return nil, err
@@ -191,8 +191,16 @@ func (s *Spring83Server) getDifficulty() (float64, uint64, error) {
 		return 0, 0, err
 	}
 
+	//	The calculation of the difficulty factor is not part of this specification, but here's an example formula that works well:
+	//
+	//   difficulty_factor = ( num_boards_stored / max_boards )**4
+	//
+	// a threshold defined by the server's difficulty factor:
+	//
+	//    MAX_KEY_64 = (2**64 - 1)
+	//    key_64_threshold = round(MAX_KEY_64 * ( 1.0 - difficulty_factor))
 	difficultyFactor := math.Pow(float64(count)/10_000_000, 4)
-	keyThreshold := uint64(MAX_SIG * (1.0 - difficultyFactor))
+	keyThreshold := uint64(math.Round(MAX_KEY_64 * (1.0 - difficultyFactor)))
 	return difficultyFactor, keyThreshold, nil
 }
 
@@ -237,14 +245,16 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
 
-		// Using that difficulty factor, we can calculate the key threshold:
+		// If the server doesn't yet have any board stored for the key, then it
+		// must apply an additional check. The key's first 16 hex characters,
+		// interpreted as a 64-bit number, must be less than a threshold
+		// defined by the server's difficulty factor:
 		//
-		// MAX_KEY = (2**256 - 1)
-		// key_threshold = MAX_KEY * (1.0 - 0.52) = <an inscrutable gigantic number>
+		//    MAX_KEY_64 = (2**64 - 1)
+		//    key_64_threshold = round(MAX_KEY_64 * ( 1.0 - difficulty_factor))
 		//
-		// The server must reject PUT requests for new keys that are not less
-		// than <an inscrutable gigantic number>
-		if binary.BigEndian.Uint64(key) >= keyThreshold {
+		// If the key fails this check, the server must reject the PUT request, returning 403 Forbidden.
+		if binary.BigEndian.Uint64(key[:8]) < keyThreshold {
 			if err != nil || len(key) != 32 {
 				http.Error(w, "Key greater than threshold", http.StatusForbidden)
 				return
@@ -378,6 +388,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	expiry := time.Now().AddDate(0, 0, 7).Format(time.RFC3339)
+	bodyTimeISO := bodyTime.Format(time.RFC3339)
 	_, err = s.db.Exec(`
 		INSERT INTO boards (key, board, creation_datetime, expiry_datetime)
 		            values(?, ?, ?, ?)
@@ -385,7 +396,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 			board=?,
 			creation_datetime=?,
 			expiry_datetime=?
-	`, keyStr, body, bodyTime, expiry, body, bodyTime, expiry)
+	`, keyStr, body, bodyTimeISO, expiry, body, bodyTimeISO, expiry)
 
 	if err != nil {
 		log.Printf("%s", err)
@@ -414,7 +425,7 @@ func (s *Spring83Server) loadBoards() ([]Board, error) {
 	for rows.Next() {
 		var key, board, creation, expiry string
 
-		err = rows.Scan(&key, &board, &expiry)
+		err = rows.Scan(&key, &board, &creation, &expiry)
 		if err != nil {
 			return nil, err
 		}
