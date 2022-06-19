@@ -288,19 +288,44 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If the current four-digit year is YYYY, and the
-	// previous four-digit year is YYYX, the server must
-	// only accept PUTs for keys that end with the four
-	// digits YYYY or YYYX, preceded in turn by the two hex
-	// digits "ed". This is the years-of-use requirement.
+	// A conforming key's final seven hex characters must be "83e" followed by
+	// four characters that, interpreted as MMYY, express a valid month and
+	// year in the range 01/00 .. 12/99. Formally, the key must match this
+	// regex:
+	// /83e(0[1-9]|1[0-2])(\d\d)$/
 	//
-	// The server must reject other keys with 400 Bad
-	// Request.
+	// If the key does not match that regex, the server must reject the
+	// request, returning 403 Forbidden.
+	//
+	// The key is only valid in the two years preceding its encoded expiration
+	// date, and expires at the end of the last day of the month specified. For
+	// example, the key
 	last4 := string(keyStr[60:64])
-	if keyStr[58:60] != "ed" ||
-		(last4 != time.Now().Format("2006") &&
-			last4 != time.Now().AddDate(1, 0, 0).Format("2006")) {
-		http.Error(w, "Signature must end with edYYYY", http.StatusBadRequest)
+	t, err := time.Parse("0106", last4)
+	if err != nil {
+		log.Printf("Failed parsing last4 %s", last4)
+		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
+		return
+	}
+
+	// This isn't quite the correct key expiry date; techncially the key
+	// expires on the last day of the month of its issuance; here we're just
+	// giving it an extra month. TODO be more accurate
+	twoYearsInHours := (365 * 2 * 24.0) + 31*24.0
+	timeDiff := t.Sub(time.Now()).Hours()
+	if keyStr[57:60] != "83e" {
+		log.Printf("Expected 83e %s", string(keyStr[57:60]))
+		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
+		return
+	}
+	if timeDiff > twoYearsInHours {
+		log.Printf("Too far in future %f", timeDiff)
+		http.Error(w, "Key is not yet valid", http.StatusBadRequest)
+		return
+	}
+	if timeDiff < 0 {
+		log.Printf("Key expired %f", timeDiff)
+		http.Error(w, "Key is expired", http.StatusBadRequest)
 		return
 	}
 
@@ -311,6 +336,8 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid signature", http.StatusBadRequest)
 		return
 	}
+
+	// TODO: here we should find the <time> element and parse its time
 
 	expiry := time.Now().AddDate(0, 0, 7).Format(time.RFC3339)
 	_, err = s.db.Exec(`
