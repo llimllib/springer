@@ -9,6 +9,7 @@
 //		 <link rel="alternate" type="text/board+html" href="https://bogbody.biz/ca93846ae61903a862d44727c16fed4b80c0522cab5e5b8b54763068b83e0623" />
 //  * scan for <link rel="next"...> links as specified in the spec
 //  * implement event logs
+//  * thread context through for timeouts
 
 package main
 
@@ -50,6 +51,16 @@ var (
 	templateFS embed.FS
 )
 
+// getenv returns the environment variable given by the key if present,
+// otherwise it returns adefault
+func getenv(key string, adefault string) string {
+	val, ok := os.LookupEnv(key)
+	if !ok {
+		return adefault
+	}
+	return val
+}
+
 func must(err error) {
 	if err != nil {
 		log.Fatal(err)
@@ -88,12 +99,16 @@ func initDB() *sql.DB {
 
 func main() {
 	db := initDB()
-	log.Print("starting helloserver")
 
 	server := newSpring83Server(db)
 	http.HandleFunc("/", server.RootHandler)
 
-	log.Fatal(http.ListenAndServe(":8000", nil))
+	host := getenv("HOST", "")
+	port := getenv("PORT", "8000")
+	addr := fmt.Sprintf("%s:%s", host, port)
+
+	log.Printf("starting helloserver on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
 func readTemplate(name string, fsys fs.FS) (string, error) {
