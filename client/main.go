@@ -28,7 +28,7 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 	// Because we have an odd-length hex string, we don't encode the '8' here
 	// and instead check it specifically in the hot loop... I'm open to ideas
 	// about how to do this better. I'd like to keep everything in the hot loop
-	// using the `bytes.compare` function which is assembly on most platforms,
+	// using the `bytes.Equal` function which is assembly on most platforms,
 	// but we don't have a full byte for the `8`
 	keyEnd := fmt.Sprintf("3e%s", time.Now().AddDate(2, 0, 0).Format("0106"))
 	target, err := hex.DecodeString(keyEnd)
@@ -48,7 +48,7 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 
 	waitGroup.Add(nRoutines)
 	for i := 0; i < nRoutines; i++ {
-		go func(num int) {
+		go func() {
 			for publicKey == nil {
 				pub, priv, err := ed25519.GenerateKey(nil)
 				if err != nil {
@@ -56,8 +56,8 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 				}
 
 				// Here's where we check for the `8`; we do it after the
-				// bytes.Compare to keep the hot loop fast
-				if bytes.Compare(pub[29:32], target) == 0 && pub[28]&0x0F == 0x08 {
+				// bytes.Equal to keep the hot loop fast
+				if bytes.Equal(pub[29:32], target) && pub[28]&0x0F == 0x08 {
 					once.Do(func() {
 						fmt.Printf("found %x\n", pub)
 						publicKey = pub
@@ -66,7 +66,7 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 				}
 			}
 			waitGroup.Done()
-		}(i)
+		}()
 	}
 
 	waitGroup.Wait()

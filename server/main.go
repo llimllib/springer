@@ -249,7 +249,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// curBoard is nil if there is no existing board for this key, and a Board object otherwise
 	curBoard, err := s.getBoard(keyStr)
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -260,7 +260,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	if curBoard == nil {
 		difficultyFactor, keyThreshold, err := s.getDifficulty()
 		if err != nil {
-			log.Printf(err.Error())
+			log.Print(err.Error())
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -320,7 +320,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// The server may also use a denylist to block certain keys, rejecting all PUTs for those keys.
 	denylist := []string{"fad415fbaa0339c4fd372d8287e50f67905321ccfd9c43fa4c20ac40afed1983"}
 	for _, key := range denylist {
-		if bytes.Compare(signature, []byte(key)) == 0 {
+		if bytes.Equal(signature, []byte(key)) {
 			http.Error(w, "Denied", http.StatusUnauthorized)
 		}
 	}
@@ -349,7 +349,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// expires on the last day of the month of its issuance; here we're just
 	// giving it an extra month. TODO be more accurate
 	twoYearsInHours := (365 * 2 * 24.0) + 31*24.0
-	timeDiff := last4Time.Sub(time.Now()).Hours()
+	timeDiff := time.Until(last4Time).Hours()
 	if keyStr[57:60] != "83e" {
 		log.Printf("Expected 83e %s", string(keyStr[57:60]))
 		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
@@ -488,14 +488,14 @@ func randstr() string {
 func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 	boards, err := s.loadBoards()
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
 		return
 	}
 
 	difficultyFactor, _, err := s.getDifficulty()
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -517,7 +517,7 @@ func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 
 	boardBytes, err := json.Marshal(boards)
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "Unable to marshal boards", http.StatusInternalServerError)
 		return
 	}
@@ -536,7 +536,7 @@ func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	board, err := s.getBoard(r.URL.Path[1:])
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
 		return
 	}
@@ -550,7 +550,7 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 
 	difficultyFactor, _, err := s.getDifficulty()
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -566,7 +566,7 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 
 	boardBytes, err := json.Marshal([]*Board{board})
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		http.Error(w, "Unable to marshal boards", http.StatusInternalServerError)
 		return
 	}
@@ -593,17 +593,18 @@ func (s *Spring83Server) Options(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Spring83Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
+	switch r.Method {
+	case "OPTIONS":
 		s.Options(w, r)
-	} else if r.Method == "PUT" {
+	case "PUT":
 		s.publishBoard(w, r)
-	} else if r.Method == "GET" {
+	case "GET":
 		if len(r.URL.Path) == 1 {
 			s.showAllBoards(w, r)
 		} else {
 			s.showBoard(w, r)
 		}
-	} else {
+	default:
 		http.Error(w, "Invalid method", http.StatusBadRequest)
 	}
 }
