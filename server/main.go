@@ -9,7 +9,6 @@
 //		 <link rel="alternate" type="text/board+html" href="https://bogbody.biz/ca93846ae61903a862d44727c16fed4b80c0522cab5e5b8b54763068b83e0623" />
 //  * scan for <link rel="next"...> links as specified in the spec
 //  * implement event logs
-//  * thread context through for timeouts
 
 package main
 
@@ -101,14 +100,23 @@ func main() {
 	db := initDB()
 
 	server := newSpring83Server(db)
-	http.HandleFunc("/", server.RootHandler)
 
 	host := getenv("HOST", "")
 	port := getenv("PORT", "8000")
 	addr := fmt.Sprintf("%s:%s", host, port)
+	timeoutMsg := "Request timed out"
+
+	srv := &http.Server{
+		Addr:              addr,
+		ReadTimeout:       1 * time.Second,
+		WriteTimeout:      1 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 2 * time.Second,
+		Handler:           http.TimeoutHandler(server, 2*time.Second, timeoutMsg),
+	}
 
 	log.Printf("starting helloserver on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	log.Fatal(srv.ListenAndServe())
 }
 
 func readTemplate(name string, fsys fs.FS) (string, error) {
@@ -584,7 +592,7 @@ func (s *Spring83Server) Options(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Spring83Server) RootHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Spring83Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		s.Options(w, r)
 	} else if r.Method == "PUT" {
