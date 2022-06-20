@@ -1,6 +1,5 @@
 // https://github.com/robinsloan/spring-83-spec/blob/main/draft-20220616.md
 // TODO:
-//  * wipe expired posts
 //  * check that the <time> tag in the body
 //  * implement peer sharing and receiving
 //  * display each board in a region with an aspect ratio of either 1:sqrt(2) or sqrt(2):1
