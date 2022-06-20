@@ -8,7 +8,7 @@
 //     * However, it is presumed that a home page or profile page might contain a <link> element analogous to the kind used to specify RSS feeds. A client scanning a web page for an associated board should look for <link> elements with the type attribute set to text/board+html.
 //		 <link rel="alternate" type="text/board+html" href="https://bogbody.biz/ca93846ae61903a862d44727c16fed4b80c0522cab5e5b8b54763068b83e0623" />
 //  * scan for <link rel="next"...> links as specified in the spec
-//  * implement event logs
+//  * add unique request ID
 
 package main
 
@@ -25,16 +25,20 @@ import (
 	"fmt"
 	"io/fs"
 	"io/ioutil"
-	"log"
 	"math"
 	"net/http"
 	"os"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"strings"
+	"syscall"
 	"text/template"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 const MAX_KEY_64 = (1 << 64) - 1
@@ -48,6 +52,15 @@ var (
 
 	//go:embed templates/*
 	templateFS embed.FS
+
+	// information about the process, for logging
+	process   = os.Args[0]
+	pid       = syscall.Getpid()
+	goversion = runtime.Version()
+
+	// set by initRuntimeValues
+	vcsRevision string
+	vcsTime     string
 )
 
 // getenv returns the environment variable given by the key if present,
@@ -60,20 +73,20 @@ func getenv(key string, adefault string) string {
 	return val
 }
 
-func must(err error) {
+func must(err error, log zerolog.Logger) {
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err).Msg("")
 	}
 }
 
-func initDB() *sql.DB {
+func initDB(log zerolog.Logger) *sql.DB {
 	dbName := "./spring83.db"
 
 	// if the db doesn't exist, create it
 	if _, err := os.Stat(dbName); errors.Is(err, os.ErrNotExist) {
-		log.Printf("initializing new database")
+		log.Info().Msg("initializing new database")
 		db, err := sql.Open("sqlite3", dbName)
-		must(err)
+		must(err, log)
 
 		initSQL := `
 		CREATE TABLE boards (
@@ -86,20 +99,117 @@ func initDB() *sql.DB {
 
 		_, err = db.Exec(initSQL)
 		if err != nil {
-			log.Fatal("%q: %s\n", err, initSQL)
+			log.Fatal().Msgf("%q: %s\n", err, initSQL)
 		}
 		return db
 	}
 
 	db, err := sql.Open("sqlite3", dbName)
-	must(err)
+	must(err, log)
 	return db
 }
 
-func main() {
-	db := initDB()
+func initLog() zerolog.Logger {
+	logLevel := getenv("LOG_LEVEL", "info")
+	level, err := zerolog.ParseLevel(logLevel)
+	if err != nil {
+		log.Panic().Err(err).Msg("")
+	}
 
-	server := newSpring83Server(db)
+	log := zerolog.New(os.Stderr).With().Timestamp().Logger().Level(level)
+	if getenv("PRETTY_LOGGING", "") != "" {
+		log = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+	}
+
+	return log
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rec *responseRecorder) WriteHeader(code int) {
+	rec.status = code
+	rec.ResponseWriter.WriteHeader(code)
+}
+
+func requestLogger(log zerolog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &responseRecorder{w, http.StatusOK}
+		t := time.Now()
+		next.ServeHTTP(rec, r)
+		log.Info().
+			Dur("duration", time.Since(t)).
+			Int("status", rec.status).
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Str("process", process).
+			Int("pid", pid).
+			Str("goversion", goversion).
+			Str("peer-ip", r.RemoteAddr).
+			Str("difficulty", w.Header().Get("Spring-Difficulty")).
+			Str("vcsRevision", vcsRevision).
+			Str("vcsTime", vcsTime).
+			Msg("Request served")
+	})
+}
+
+func initRuntimeValues(log zerolog.Logger) {
+	if bi, ok := debug.ReadBuildInfo(); !ok {
+		log.Fatal().Msg("Unable to get build info")
+	} else {
+		for i := range bi.Settings {
+			switch bi.Settings[i].Key {
+			case "vcs.revision":
+				vcsRevision = bi.Settings[i].Value
+			case "vcs.time":
+				vcsTime = bi.Settings[i].Value
+			}
+		}
+	}
+}
+
+func removeExpiredBoards(db *sql.DB, log zerolog.Logger) {
+	t := time.Now()
+	dt := t.Format(time.RFC3339)
+
+	// This should work because ISO datetimes are lexicographically ordered
+	res, err := db.Exec(`
+		DELETE FROM boards
+		WHERE expiry_datetime < ?
+	`, dt)
+	if err != nil {
+		log.Error().Err(err).Msg("Error inserting board")
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		log.Error().Err(err).Msg("Error inserting board")
+	}
+
+	log.Info().Int64("deleted", rows).Dur("duration", time.Since(t)).Msg("entries cleaned")
+}
+
+// initCleaner starts a goroutine that will delete any expired entries every 5 minutes
+func initCleaner(db *sql.DB, log zerolog.Logger) {
+	removeExpiredBoards(db, log)
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		for {
+			<-ticker.C
+			removeExpiredBoards(db, log)
+		}
+	}()
+}
+
+func main() {
+	log := initLog()
+	db := initDB(log)
+	initRuntimeValues(log)
+	initCleaner(db, log)
+
+	server := newSpring83Server(db, log)
 
 	host := getenv("HOST", "")
 	port := getenv("PORT", "8000")
@@ -112,11 +222,13 @@ func main() {
 		WriteTimeout:      1 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
-		Handler:           http.TimeoutHandler(server, 2*time.Second, timeoutMsg),
+		Handler:           requestLogger(log, http.TimeoutHandler(server, 2*time.Second, timeoutMsg)),
 	}
 
-	log.Printf("starting helloserver on %s", addr)
-	log.Fatal(srv.ListenAndServe())
+	log.Info().Str("addr", addr).Msg("starting helloserver on")
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		log.Err(err).Msg("Error received from server")
+	}
 }
 
 func readTemplate(name string, fsys fs.FS) (string, error) {
@@ -141,14 +253,23 @@ func mustTemplate(name string, fsys fs.FS) *template.Template {
 	return t
 }
 
+type Board struct {
+	Key      string
+	Board    string
+	Creation time.Time
+	Expiry   time.Time
+}
+
 type Spring83Server struct {
 	db           *sql.DB
+	log          zerolog.Logger
 	homeTemplate *template.Template
 }
 
-func newSpring83Server(db *sql.DB) *Spring83Server {
+func newSpring83Server(db *sql.DB, log zerolog.Logger) *Spring83Server {
 	return &Spring83Server{
 		db:           db,
+		log:          log,
 		homeTemplate: mustTemplate("templates/index.html", templateFS),
 	}
 }
@@ -249,7 +370,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	// curBoard is nil if there is no existing board for this key, and a Board object otherwise
 	curBoard, err := s.getBoard(keyStr)
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Msg("Unable to get board")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -260,11 +381,12 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	if curBoard == nil {
 		difficultyFactor, keyThreshold, err := s.getDifficulty()
 		if err != nil {
-			log.Print(err.Error())
+			s.log.Err(err).Msg("Unable to get difficulty")
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 
+		s.log.Info().Float64("diff", difficultyFactor).Msg("difficulty")
 		w.Header().Add("Spring-Difficulty", fmt.Sprintf("%f", difficultyFactor))
 
 		// If the server doesn't yet have any board stored for the key, then it
@@ -340,7 +462,7 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	last4 := string(keyStr[60:64])
 	last4Time, err := time.Parse("0106", last4)
 	if err != nil {
-		log.Printf("Failed parsing last4 %s", last4)
+		s.log.Error().Str("last4", last4).Msg("Failed parsing last4")
 		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
 		return
 	}
@@ -351,17 +473,17 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	twoYearsInHours := (365 * 2 * 24.0) + 31*24.0
 	timeDiff := time.Until(last4Time).Hours()
 	if keyStr[57:60] != "83e" {
-		log.Printf("Expected 83e %s", string(keyStr[57:60]))
+		s.log.Error().Str("keyStr", keyStr[57:60]).Msg("Expected 83e")
 		http.Error(w, "Key must end with 83eMMYY", http.StatusBadRequest)
 		return
 	}
 	if timeDiff > twoYearsInHours {
-		log.Printf("Too far in future %f", timeDiff)
+		s.log.Error().Float64("timeDiff", timeDiff).Msg("Key too far in future")
 		http.Error(w, "Key is not yet valid", http.StatusBadRequest)
 		return
 	}
 	if timeDiff < 0 {
-		log.Printf("Key expired %f", timeDiff)
+		s.log.Error().Float64("timeDiff", timeDiff).Msg("Key expired")
 		http.Error(w, "Key is expired", http.StatusBadRequest)
 		return
 	}
@@ -383,28 +505,29 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	//   future.
 	match := TIME_RE.Find(body)
 	if match == nil {
-		log.Printf("no time element in body: %s %v", body, body)
+		s.log.Error().Bytes("body", body).Msg("No time element in body")
 		http.Error(w, "Missing time element in body", http.StatusBadRequest)
 		return
 	}
 	if len(match) != 38 {
-		log.Printf("match: %s len %d != 38", match, len(match))
+		s.log.Error().Bytes("match", match).Int("len", len(match)).Msg("invalid match length")
 		http.Error(w, "Invalid time element in body", http.StatusBadRequest)
 		return
 	}
 	bodyTime, err := time.Parse(time.RFC3339, string(match[16:36]))
 	if err != nil {
-		log.Printf("Unable to parse: %s", match[16:36])
+		s.log.Error().Bytes("matchtime", match[16:36]).Msg("Unable to parse")
 		http.Error(w, "Invalid time element in body", http.StatusBadRequest)
 		return
 	}
 	if time.Now().Before(bodyTime) {
-		log.Printf("Future time: %v", bodyTime)
+		s.log.Error().Time("bodyTime", bodyTime).Msg("Future time")
 		http.Error(w, "Future times are not allowed", http.StatusBadRequest)
 		return
 	}
 
 	if curBoard != nil && bodyTime.Before(curBoard.Creation) {
+		s.log.Error().Time("bodyTime", bodyTime).Msg("Old content")
 		http.Error(w, "Old content", http.StatusConflict)
 		return
 	}
@@ -421,16 +544,9 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 	`, keyStr, body, bodyTimeISO, expiry, body, bodyTimeISO, expiry)
 
 	if err != nil {
-		log.Printf("%s", err)
+		s.log.Error().Err(err).Msg("Error inserting board")
 		http.Error(w, "Server error", http.StatusInternalServerError)
 	}
-}
-
-type Board struct {
-	Key      string
-	Board    string
-	Creation time.Time
-	Expiry   time.Time
 }
 
 func (s *Spring83Server) loadBoards() ([]Board, error) {
@@ -488,14 +604,14 @@ func randstr() string {
 func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 	boards, err := s.loadBoards()
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Msg("Unable to load boards")
 		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
 		return
 	}
 
 	difficultyFactor, _, err := s.getDifficulty()
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Msg("Unable to get difficulty")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -517,7 +633,7 @@ func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 
 	boardBytes, err := json.Marshal(boards)
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Msg("Unable to marshal boards")
 		http.Error(w, "Unable to marshal boards", http.StatusInternalServerError)
 		return
 	}
@@ -536,7 +652,7 @@ func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 	board, err := s.getBoard(r.URL.Path[1:])
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Str("path: ", r.URL.Path).Msg("Unable to get board")
 		http.Error(w, "Unable to load boards", http.StatusInternalServerError)
 		return
 	}
@@ -550,7 +666,7 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 
 	difficultyFactor, _, err := s.getDifficulty()
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Msg("Unable to get difficulty")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -566,7 +682,7 @@ func (s *Spring83Server) showBoard(w http.ResponseWriter, r *http.Request) {
 
 	boardBytes, err := json.Marshal([]*Board{board})
 	if err != nil {
-		log.Print(err.Error())
+		s.log.Err(err).Msg("Unable to marshal board")
 		http.Error(w, "Unable to marshal boards", http.StatusInternalServerError)
 		return
 	}
