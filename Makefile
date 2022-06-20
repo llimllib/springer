@@ -1,5 +1,5 @@
-bin/springer:
-	go build -o bin/springer server/main.go
+bin/springer: server/main.go
+	go build -o bin/springer ./server
 
 # Use zig as the cc to cross-compile mattn/sqlite for linux
 #
@@ -9,5 +9,5 @@ bin/springer:
 # 
 # to run locally:
 #   docker run -it -v $(pwd)/bin:/app ubuntu /app/springer-linux
-bin/springer-linux:
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux" CXX="zig cc -target x86_64-linux" go build -o bin/springer-linux server/main.go
+bin/springer-linux: server/main.go
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux" CXX="zig cc -target x86_64-linux" go build -o bin/springer-linux ./server
