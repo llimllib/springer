@@ -3,12 +3,12 @@
 //  * wipe expired posts
 //  * check that the <time> tag in the body
 //  * implement peer sharing and receiving
-//  * add /<key> to show a single board
 //  * display each board in a region with an aspect ratio of either 1:sqrt(2) or sqrt(2):1
 //  * add <link> elements:
 //     * However, it is presumed that a home page or profile page might contain a <link> element analogous to the kind used to specify RSS feeds. A client scanning a web page for an associated board should look for <link> elements with the type attribute set to text/board+html.
 //		 <link rel="alternate" type="text/board+html" href="https://bogbody.biz/ca93846ae61903a862d44727c16fed4b80c0522cab5e5b8b54763068b83e0623" />
 //  * scan for <link rel="next"...> links as specified in the spec
+//  * implement event logs
 
 package main
 
@@ -17,11 +17,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"embed"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"log"
 	"math"
@@ -43,6 +45,9 @@ var (
 	// the following format exactly; "valid HTML" is not sufficient:
 	// <time datetime="YYYY-MM-DDTHH:MM:SSZ">
 	TIME_RE = regexp.MustCompile("<time datetime=\".{19}Z\">")
+
+	//go:embed templates/*
+	templateFS embed.FS
 )
 
 func must(err error) {
@@ -91,22 +96,16 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8000", nil))
 }
 
-func readTemplate(name string) (string, error) {
-	file, err := os.Open(name)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	h, err := ioutil.ReadAll(file)
+func readTemplate(name string, fsys fs.FS) (string, error) {
+	h, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return "", err
 	}
 	return string(h), nil
 }
 
-func mustTemplate(name string) *template.Template {
-	f, err := readTemplate(name)
+func mustTemplate(name string, fsys fs.FS) *template.Template {
+	f, err := readTemplate(name, fsys)
 	if err != nil {
 		panic(err)
 	}
@@ -127,7 +126,7 @@ type Spring83Server struct {
 func newSpring83Server(db *sql.DB) *Spring83Server {
 	return &Spring83Server{
 		db:           db,
-		homeTemplate: mustTemplate("server/templates/index.html"),
+		homeTemplate: mustTemplate("templates/index.html", templateFS),
 	}
 }
 
@@ -488,6 +487,7 @@ func (s *Spring83Server) showAllBoards(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("script-src 'nonce-%s'", nonce),
 		"form-action *",
 		"connect-src *",
+		"img-src self",
 	}
 
 	w.Header().Add("Content-Security-Policy", strings.Join(policy, "; "))
