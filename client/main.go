@@ -1,5 +1,5 @@
 // TODO:
-//
+// * Board UI?
 package main
 
 import (
@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -40,11 +41,12 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 	var waitGroup sync.WaitGroup
 	var once sync.Once
 
-	fmt.Printf(" - looking for a key that ends in %s using %d routines\n",
+	fmt.Printf(" - looking for a key that ends in 8%s using %d routines\n",
 		keyEnd, nRoutines)
 
 	var publicKey ed25519.PublicKey
 	var privateKey ed25519.PrivateKey
+	start := time.Now()
 
 	waitGroup.Add(nRoutines)
 	for i := 0; i < nRoutines; i++ {
@@ -59,7 +61,7 @@ func validKey() (ed25519.PublicKey, ed25519.PrivateKey) {
 				// bytes.Equal to keep the hot loop fast
 				if bytes.Equal(pub[29:32], target) && pub[28]&0x0F == 0x08 {
 					once.Do(func() {
-						fmt.Printf("found %x\n", pub)
+						fmt.Printf("found %x in %f minutes\n", pub, time.Since(start).Minutes())
 						publicKey = pub
 						privateKey = priv
 					})
@@ -81,30 +83,41 @@ func fileExists(name string) bool {
 	return true
 }
 
-func getKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
-	user, err := user.Current()
-	if err != nil {
-		panic(err)
+func getKeys(folder string) (ed25519.PublicKey, ed25519.PrivateKey) {
+	// get the expected public key file and private key file paths
+	var pubfile, privfile string
+	if len(folder) == 0 {
+		user, err := user.Current()
+		if err != nil {
+			panic(err)
+		}
+
+		configPath := os.Getenv("XDG_CONFIG_HOME")
+		if configPath == "" {
+			configPath = filepath.Join(user.HomeDir, ".config", "spring83")
+		}
+
+		if err = os.MkdirAll(configPath, os.ModePerm); err != nil {
+			panic(err)
+		}
+
+		pubfile = filepath.Join(configPath, "key.pub")
+		privfile = filepath.Join(configPath, "key.priv")
+	} else {
+		pubfile = filepath.Join(folder, "key.pub")
+		privfile = filepath.Join(folder, "key.priv")
 	}
 
-	configPath := os.Getenv("XDG_CONFIG_HOME")
-	if configPath == "" {
-		configPath = filepath.Join(user.HomeDir, ".config", "spring83")
-	}
-
-	if err = os.MkdirAll(configPath, os.ModePerm); err != nil {
-		panic(err)
-	}
-
-	pubfile := filepath.Join(configPath, "key.pub")
-	privfile := filepath.Join(configPath, "key.priv")
+	// try to load the public and private key files as ed25519 keys
 	var pubkey ed25519.PublicKey
 	var privkey ed25519.PrivateKey
+	var err error
 	if fileExists(pubfile) && fileExists(privfile) {
 		pubkey, err = ioutil.ReadFile(pubfile)
 		if err != nil {
 			panic(err)
 		}
+
 		privkey, err = ioutil.ReadFile(privfile)
 		if err != nil {
 			panic(err)
@@ -120,17 +133,22 @@ func getKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pubkey, privkey
 }
 
-func main() {
-	pubkey, privkey := getKeys()
-
-	client := &http.Client{}
-
-	body, err := ioutil.ReadAll(os.Stdin)
-	if err != nil {
-		panic(err)
+func getBody(inputFile string) []byte {
+	var body []byte
+	var err error
+	if inputFile == "-" {
+		body, err = ioutil.ReadAll(os.Stdin)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		body, err = ioutil.ReadFile(inputFile)
+		if err != nil {
+			panic(err)
+		}
 	}
 
-	// Prepoend a time element. Maybe we should check to see if it's already
+	// Prepend a time element. Maybe we should check to see if it's already
 	// been provided?
 	timeElt := []byte(fmt.Sprintf("<time datetime=\"%s\">", time.Now().UTC().Format(time.RFC3339)))
 	body = append(timeElt, body...)
@@ -142,16 +160,19 @@ func main() {
 		panic(fmt.Errorf("input body too long"))
 	}
 
-	// TODO: take the URL as a command line param
-	url := fmt.Sprintf("http://localhost:8000/%x", pubkey)
-	fmt.Printf("URL: %s\n", url)
+	return body
+}
+
+func sendBody(server string, body []byte, pubkey ed25519.PublicKey, privkey ed25519.PrivateKey) {
+	client := &http.Client{}
+
+	url := fmt.Sprintf("%s/%x", server, pubkey)
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(body))
 	if err != nil {
 		panic(err)
 	}
 
 	sig := ed25519.Sign(privkey, body)
-	fmt.Printf("Spring-83 Signature=%x\n", sig)
 	req.Header.Set("Authorization", fmt.Sprintf("Spring-83 Signature=%x", sig))
 
 	dt := time.Now().Format(time.RFC1123)
@@ -168,5 +189,41 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Printf("%s: %s\n", resp.Status, responseBody)
+	if resp.StatusCode != 200 {
+		fmt.Printf("%s: %s\n", resp.Status, responseBody)
+	}
+}
+
+func usage() {
+	fmt.Print(`springer [-file=filename] [-key=keyfolder] server
+
+Send a spring83 board to a server
+
+flags:
+	-file=filename
+		if present, a file to send to the server instead of accepting bytes on
+		stdin
+	-key=keyfolder
+		a folder the program should use for finding your public and private
+		keys. It will expect there to be two files, one called "key.pub" and
+		another called "key.priv" which are your public and private keys,
+		respectively
+`)
+	os.Exit(1)
+}
+
+func main() {
+	inputFile := flag.String("file", "-", "The file to send to the server")
+	keyFolder := flag.String("key", "", "A folder to check for key.pub and key.priv")
+	flag.Usage = usage
+	flag.Parse()
+
+	if len(flag.Args()) < 1 {
+		usage()
+	}
+	server := flag.Args()[0]
+
+	pubkey, privkey := getKeys(*keyFolder)
+
+	sendBody(server, getBody(*inputFile), pubkey, privkey)
 }
