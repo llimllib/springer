@@ -9,7 +9,7 @@
 //  * scan for <link rel="next"...> links as specified in the spec
 //  * add unique request ID
 
-package main
+package server
 
 import (
 	"bytes"
@@ -37,7 +37,6 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 const MAX_KEY_64 = (1 << 64) - 1
@@ -62,23 +61,13 @@ var (
 	vcsTime     string
 )
 
-// getenv returns the environment variable given by the key if present,
-// otherwise it returns adefault
-func getenv(key string, adefault string) string {
-	val, ok := os.LookupEnv(key)
-	if !ok {
-		return adefault
-	}
-	return val
-}
-
 func must(err error, log zerolog.Logger) {
 	if err != nil {
 		log.Fatal().Err(err).Msg("")
 	}
 }
 
-func initDB(log zerolog.Logger) *sql.DB {
+func InitDB(log zerolog.Logger) *sql.DB {
 	dbName := "./spring83.db"
 
 	// if the db doesn't exist, create it
@@ -108,19 +97,16 @@ func initDB(log zerolog.Logger) *sql.DB {
 	return db
 }
 
-func initLog() zerolog.Logger {
-	logLevel := getenv("LOG_LEVEL", "info")
-	level, err := zerolog.ParseLevel(logLevel)
-	if err != nil {
-		log.Panic().Err(err).Msg("")
-	}
-
-	log := zerolog.New(os.Stderr).With().Timestamp().Logger().Level(level)
-	if getenv("PRETTY_LOGGING", "") != "" {
-		log = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
-	}
-
-	return log
+// initCleaner starts a goroutine that will delete any expired entries every 5 minutes
+func InitCleaner(db *sql.DB, log zerolog.Logger) {
+	removeExpiredBoards(db, log)
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		for {
+			<-ticker.C
+			removeExpiredBoards(db, log)
+		}
+	}()
 }
 
 type responseRecorder struct {
@@ -133,7 +119,7 @@ func (rec *responseRecorder) WriteHeader(code int) {
 	rec.ResponseWriter.WriteHeader(code)
 }
 
-func requestLogger(log zerolog.Logger, next http.Handler) http.Handler {
+func RequestLogger(log zerolog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &responseRecorder{w, http.StatusOK}
 		t := time.Now()
@@ -154,7 +140,7 @@ func requestLogger(log zerolog.Logger, next http.Handler) http.Handler {
 	})
 }
 
-func initRuntimeValues(log zerolog.Logger) {
+func InitRuntimeValues(log zerolog.Logger) {
 	if bi, ok := debug.ReadBuildInfo(); !ok {
 		log.Fatal().Msg("Unable to get build info")
 	} else {
@@ -188,46 +174,6 @@ func removeExpiredBoards(db *sql.DB, log zerolog.Logger) {
 	}
 
 	log.Info().Int64("deleted", rows).Dur("duration", time.Since(t)).Msg("entries cleaned")
-}
-
-// initCleaner starts a goroutine that will delete any expired entries every 5 minutes
-func initCleaner(db *sql.DB, log zerolog.Logger) {
-	removeExpiredBoards(db, log)
-	ticker := time.NewTicker(5 * time.Minute)
-	go func() {
-		for {
-			<-ticker.C
-			removeExpiredBoards(db, log)
-		}
-	}()
-}
-
-func main() {
-	log := initLog()
-	db := initDB(log)
-	initRuntimeValues(log)
-	initCleaner(db, log)
-
-	server := newSpring83Server(db, log)
-
-	host := getenv("HOST", "")
-	port := getenv("PORT", "8000")
-	addr := fmt.Sprintf("%s:%s", host, port)
-	timeoutMsg := "Request timed out"
-
-	srv := &http.Server{
-		Addr:              addr,
-		ReadTimeout:       1 * time.Second,
-		WriteTimeout:      1 * time.Second,
-		IdleTimeout:       30 * time.Second,
-		ReadHeaderTimeout: 2 * time.Second,
-		Handler:           requestLogger(log, http.TimeoutHandler(server, 2*time.Second, timeoutMsg)),
-	}
-
-	log.Info().Str("addr", addr).Msg("starting helloserver on")
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		log.Err(err).Msg("Error received from server")
-	}
 }
 
 func readTemplate(name string, fsys fs.FS) (string, error) {
@@ -265,7 +211,7 @@ type Spring83Server struct {
 	homeTemplate *template.Template
 }
 
-func newSpring83Server(db *sql.DB, log zerolog.Logger) *Spring83Server {
+func NewSpring83Server(db *sql.DB, log zerolog.Logger) *Spring83Server {
 	return &Spring83Server{
 		db:           db,
 		log:          log,
