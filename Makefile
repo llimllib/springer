@@ -1,8 +1,8 @@
 bin/springerd: cmd/springerd/main.go server/main.go
-	go build -o bin/springerd ./cmd/springer
+	go build -o bin/springerd ./cmd/springerd
 
 bin/springer: client/main.go
-	go build -o bin/springer ./cmd/springerd
+	go build -o bin/springer ./cmd/springer
 
 # Use zig as the cc to cross-compile mattn/sqlite for linux
 #
