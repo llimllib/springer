@@ -179,12 +179,12 @@ func removeExpiredBoards(db *sql.DB, log zerolog.Logger) {
 		WHERE expiry_datetime < ?
 	`, dt)
 	if err != nil {
-		log.Error().Err(err).Msg("Error inserting board")
+		log.Error().Err(err).Msg("Error deleting board")
 	}
 
 	rows, err := res.RowsAffected()
 	if err != nil {
-		log.Error().Err(err).Msg("Error inserting board")
+		log.Error().Err(err).Msg("Error getting deleted board rows affected")
 	}
 
 	log.Info().Int64("deleted", rows).Dur("duration", time.Since(t)).Msg("entries cleaned")
@@ -540,7 +540,8 @@ func (s *Spring83Server) publishBoard(w http.ResponseWriter, r *http.Request) {
 			board=?,
 			creation_datetime=?,
 			expiry_datetime=?
-	`, keyStr, body, bodyTimeISO, expiry, body, bodyTimeISO, expiry)
+		WHERE key=?
+	`, keyStr, body, bodyTimeISO, expiry, body, bodyTimeISO, expiry, keyStr)
 
 	if err != nil {
 		s.log.Error().Err(err).Msg("Error inserting board")
