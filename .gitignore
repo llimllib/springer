@@ -1,2 +1,6 @@
 *.db
 bin
+.envrc
+test.html
+testkeys
+testkeys2
